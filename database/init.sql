@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS saved_articles (
+  id SERIAL PRIMARY KEY,
+  external_id TEXT UNIQUE NOT NULL,
+  title TEXT NOT NULL,
+  saved_at TIMESTAMPTZ DEFAULT NOW()
+);
