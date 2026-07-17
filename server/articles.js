@@ -12,7 +12,19 @@ let cache = { articles: [], expiresAt: 0 }
 const decode = value => value.replace(/<!\[CDATA\[([\s\S]*?)]]>/g, '$1').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>')
 const text = value => decode(value || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
 const tag = (item, name) => { const match = item.match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`, 'i')); return match?.[1] || '' }
-const image = item => item.match(/<(?:media:content|media:thumbnail|enclosure)[^>]+(?:url|href)=["']([^"']+)["']/i)?.[1] || ''
+const attribute = (value, name) => value.match(new RegExp(`\\b${name}=["']([^"']+)["']`, 'i'))?.[1] || ''
+const mediaTags = item => [...item.matchAll(/<(?:media:content|media:thumbnail|enclosure)\b[^>]*>/gi)].map(match => match[0])
+const image = item => attribute(mediaTags(item).find(value => /media:thumbnail|type=["']image|medium=["']image/i.test(value)) || '', 'url') || item.match(/<img[^>]+src=["']([^"']+)["']/i)?.[1] || ''
+const video = item => {
+  const youtubeId = tag(item, 'yt:videoId')
+  if (youtubeId) return { type: 'embed', url: `https://www.youtube-nocookie.com/embed/${youtubeId}` }
+  const mediaTag = mediaTags(item).find(value => /type=["']video|medium=["']video/i.test(value)) || item.match(/<media:player\b[^>]*>/i)?.[0] || ''
+  const url = attribute(mediaTag, 'url')
+  if (!url) return null
+  return /youtube\.com|youtu\.be|vimeo\.com/i.test(url)
+    ? { type: 'embed', url }
+    : { type: 'file', url }
+}
 const idFor = url => Buffer.from(url).toString('base64url')
 
 export function classify(value = '') {
@@ -35,7 +47,7 @@ async function fetchFeed(feed) {
     const title = text(tag(item, 'title'))
     const description = text(tag(item, 'description'))
     const publishedAt = new Date(text(tag(item, 'pubDate')) || Date.now()).toISOString()
-    return { id: idFor(url), title, description: description || 'Read the latest reporting from this source.', source: feed.name, category: classify(`${feed.category} ${title} ${description}`), image: image(item), publishedAt, content: description || 'Continue reading at the original publisher.', url }
+    return { id: idFor(url), title, description: description || 'Read the latest reporting from this source.', source: feed.name, category: classify(`${feed.category} ${title} ${description}`), image: image(item), video: video(item), publishedAt, content: description || 'Continue reading at the original publisher.', url }
   }).filter(article => article.url && article.title)
 }
 
@@ -45,7 +57,7 @@ async function fetchNewsApi() {
   if (!response.ok) return []
   const json = await response.json()
   return json.articles.filter(article => article.title && article.url).map(article => ({
-    id: idFor(article.url), title: article.title, description: article.description || 'Read the latest reporting from this source.', source: article.source?.name || 'News desk', image: article.urlToImage || '', publishedAt: article.publishedAt, content: article.content || article.description || 'Continue reading at the original publisher.', url: article.url, category: classify(`${article.title} ${article.description}`)
+    id: idFor(article.url), title: article.title, description: article.description || 'Read the latest reporting from this source.', source: article.source?.name || 'News desk', image: article.urlToImage || '', video: null, publishedAt: article.publishedAt, content: article.content || article.description || 'Continue reading at the original publisher.', url: article.url, category: classify(`${article.title} ${article.description}`)
   }))
 }
 
@@ -63,5 +75,10 @@ export async function getAllArticles() {
 
 export async function getArticles(page = 1, category = 'all') {
   const articles = await getAllArticles()
-  return articles.filter(article => category === 'all' || article.category === category).slice((page - 1) * 6, page * 6)
+  // Keep the feed editorially useful even when a source omits artwork: visual stories
+  // lead each page, while still allowing text-only reporting to appear further down.
+  return articles
+    .filter(article => category === 'all' || article.category === category)
+    .sort((a, b) => Number(Boolean(b.image || b.video)) - Number(Boolean(a.image || a.video)) || new Date(b.publishedAt) - new Date(a.publishedAt))
+    .slice((page - 1) * 6, page * 6)
 }
