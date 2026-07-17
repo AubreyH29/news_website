@@ -1,30 +1,67 @@
-const images = [
-  'https://images.unsplash.com/photo-1521292270410-a8c4d716d518?auto=format&fit=crop&w=1200&q=85',
-  'https://images.unsplash.com/photo-1519608487953-e999c86e7454?auto=format&fit=crop&w=1200&q=85',
-  'https://images.unsplash.com/photo-1532094349884-543bc11b234d?auto=format&fit=crop&w=1200&q=85',
-  'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=1200&q=85',
-  'https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?auto=format&fit=crop&w=1200&q=85',
-  'https://images.unsplash.com/photo-1504711434969-e33886168f5c?auto=format&fit=crop&w=1200&q=85'
+const FEEDS = [
+  { name: 'BBC News', category: 'world', url: 'https://feeds.bbci.co.uk/news/world/rss.xml' },
+  { name: 'BBC News', category: 'business', url: 'https://feeds.bbci.co.uk/news/business/rss.xml' },
+  { name: 'NPR', category: 'world', url: 'https://feeds.npr.org/1001/rss.xml' },
+  { name: 'NPR', category: 'science', url: 'https://feeds.npr.org/1007/rss.xml' },
+  { name: 'The Guardian', category: 'culture', url: 'https://www.theguardian.com/culture/rss' },
+  { name: 'ESPN', category: 'sports', url: 'https://www.espn.com/espn/rss/news' }
 ]
-export const fallbackArticles = [
-  ['world','A new map of the world’s shifting alliances','Leaders are redrawing the lines of cooperation as a consequential season begins.','Global Desk'],
-  ['science','The quiet revolution happening beneath the city','Researchers find new ways to make urban life cleaner, greener and more resilient.','Science & Health'],
-  ['culture','In a small theater, a big idea takes the stage','A community of makers is rewriting the rules of who gets to tell a story.','Arts Review'],
-  ['technology','What comes after the screen?','Designers are building more human ways to live with our devices.','Future Society'],
-  ['business','The patient work of rebuilding a local economy','A town’s entrepreneurs discover that growth begins with trust.','Business'],
-  ['sports','The game that brought a city together','Inside the final hours before a historic championship match.','Sports'],
-  ['world','A conversation across an ocean','Two families separated by distance find a shared language.','Global Desk'],
-  ['science','A field guide to the insects in your backyard','The overlooked creatures that keep our neighborhoods humming.','Science & Health'],
-  ['culture','The albums that made the summer feel endless','A critic’s notes on the songs, sounds and surprises of the season.','Arts Review'],
-  ['technology','The engineers making energy feel invisible','A new generation of grids promises power when and where it is needed.','Future Society'],
-  ['business','Why the corner shop still matters','Independent retailers show the long view can be good business.','Business'],
-  ['sports','A runner finds room to breathe','On the road to a personal best, the small moments make all the difference.','Sports']
-].map(([category,title,description,source], i) => ({ id: `ledger-${i+1}`, category, title, description, source, image: images[i % images.length], publishedAt: new Date(Date.now()-i*3600000*3).toISOString(), content: `${description} This is a placeholder full article for The Daily Ledger’s local edition. In production, this space is populated from the original publisher’s available summary and directs readers to its source for complete reporting.`, url: '#' }))
-export function classify(text='') { const value = text.toLowerCase(); if (/tech|ai |software|digital|internet/.test(value)) return 'technology'; if (/market|business|economy|company|finance/.test(value)) return 'business'; if (/sport|football|tennis|game|match/.test(value)) return 'sports'; if (/science|health|climate|space|research/.test(value)) return 'science'; if (/film|music|art|book|culture/.test(value)) return 'culture'; return 'world' }
-export async function getArticles(page = 1, category = 'all') {
-  if (!process.env.NEWS_API_KEY) return fallbackArticles.filter(a => category === 'all' || a.category === category).slice((page-1)*6, page*6)
-  const response = await fetch(`https://newsapi.org/v2/top-headlines?language=en&pageSize=100&apiKey=${process.env.NEWS_API_KEY}`)
-  if (!response.ok) throw new Error('News service unavailable')
+
+let cache = { articles: [], expiresAt: 0 }
+
+const decode = value => value.replace(/<!\[CDATA\[([\s\S]*?)]]>/g, '$1').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+const text = value => decode(value || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
+const tag = (item, name) => { const match = item.match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`, 'i')); return match?.[1] || '' }
+const image = item => item.match(/<(?:media:content|media:thumbnail|enclosure)[^>]+(?:url|href)=["']([^"']+)["']/i)?.[1] || ''
+const idFor = url => Buffer.from(url).toString('base64url')
+
+export function classify(value = '') {
+  const textValue = value.toLowerCase()
+  if (/tech|ai |software|digital|internet|cyber/.test(textValue)) return 'technology'
+  if (/market|business|economy|company|finance|trade/.test(textValue)) return 'business'
+  if (/sport|football|tennis|game|match|olympic/.test(textValue)) return 'sports'
+  if (/science|health|climate|space|research|environment/.test(textValue)) return 'science'
+  if (/film|music|art|book|culture|theatre/.test(textValue)) return 'culture'
+  return 'world'
+}
+
+async function fetchFeed(feed) {
+  const response = await fetch(feed.url, { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': 'TheDailyLedger/1.0 (+local news reader)' } })
+  if (!response.ok) throw new Error(`${feed.name} returned ${response.status}`)
+  const xml = await response.text()
+  return [...xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)].map(match => {
+    const item = match[1]
+    const url = text(tag(item, 'link'))
+    const title = text(tag(item, 'title'))
+    const description = text(tag(item, 'description'))
+    const publishedAt = new Date(text(tag(item, 'pubDate')) || Date.now()).toISOString()
+    return { id: idFor(url), title, description: description || 'Read the latest reporting from this source.', source: feed.name, category: classify(`${feed.category} ${title} ${description}`), image: image(item), publishedAt, content: description || 'Continue reading at the original publisher.', url }
+  }).filter(article => article.url && article.title)
+}
+
+async function fetchNewsApi() {
+  if (!process.env.NEWS_API_KEY) return []
+  const response = await fetch(`https://newsapi.org/v2/top-headlines?language=en&pageSize=100&apiKey=${process.env.NEWS_API_KEY}`, { signal: AbortSignal.timeout(8000) })
+  if (!response.ok) return []
   const json = await response.json()
-  return json.articles.filter(a => a.title && a.urlToImage).map((a, i) => ({ id: Buffer.from(a.url).toString('base64url'), title:a.title, description:a.description || 'Read the latest reporting from this source.', source:a.source?.name || 'News desk', image:a.urlToImage, publishedAt:a.publishedAt, content:a.content || a.description, url:a.url, category:classify(`${a.title} ${a.description}`) })).filter(a => category === 'all' || a.category === category).slice((page-1)*6, page*6)
+  return json.articles.filter(article => article.title && article.url).map(article => ({
+    id: idFor(article.url), title: article.title, description: article.description || 'Read the latest reporting from this source.', source: article.source?.name || 'News desk', image: article.urlToImage || '', publishedAt: article.publishedAt, content: article.content || article.description || 'Continue reading at the original publisher.', url: article.url, category: classify(`${article.title} ${article.description}`)
+  }))
+}
+
+export async function getAllArticles() {
+  if (cache.expiresAt > Date.now()) return cache.articles
+  const results = await Promise.allSettled(FEEDS.map(fetchFeed))
+  const feedArticles = results.flatMap(result => result.status === 'fulfilled' ? result.value : [])
+  const articles = [...feedArticles, ...await fetchNewsApi()]
+    .filter((article, index, source) => source.findIndex(other => other.url === article.url) === index)
+    .sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt))
+  if (!articles.length) throw new Error('All configured news sources are unavailable')
+  cache = { articles, expiresAt: Date.now() + 10 * 60 * 1000 }
+  return articles
+}
+
+export async function getArticles(page = 1, category = 'all') {
+  const articles = await getAllArticles()
+  return articles.filter(article => category === 'all' || article.category === category).slice((page - 1) * 6, page * 6)
 }
