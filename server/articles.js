@@ -1,11 +1,21 @@
 const FEEDS = [
-  { name: 'BBC News', category: 'world', url: 'https://feeds.bbci.co.uk/news/world/rss.xml' },
-  { name: 'BBC News', category: 'business', url: 'https://feeds.bbci.co.uk/news/business/rss.xml' },
-  { name: 'NPR', category: 'world', url: 'https://feeds.npr.org/1001/rss.xml' },
-  { name: 'NPR', category: 'science', url: 'https://feeds.npr.org/1007/rss.xml' },
-  { name: 'The Guardian', category: 'culture', url: 'https://www.theguardian.com/culture/rss' },
-  { name: 'ESPN', category: 'sports', url: 'https://www.espn.com/espn/rss/news' }
+  { name: 'BBC News', category: 'world', url: 'https://feeds.bbci.co.uk/news/world/rss.xml', logoDomain: 'bbc.com' },
+  { name: 'BBC News', category: 'business', url: 'https://feeds.bbci.co.uk/news/business/rss.xml', logoDomain: 'bbc.com' },
+  { name: 'NPR', category: 'world', url: 'https://feeds.npr.org/1001/rss.xml', logoDomain: 'npr.org' },
+  { name: 'NPR', category: 'science', url: 'https://feeds.npr.org/1007/rss.xml', logoDomain: 'npr.org' },
+  { name: 'The Guardian', category: 'culture', url: 'https://www.theguardian.com/culture/rss', logoDomain: 'theguardian.com' },
+  { name: 'ESPN', category: 'sports', url: 'https://www.espn.com/espn/rss/news', logoDomain: 'espn.com' }
 ]
+
+const SOURCE_LOGO_DOMAINS = {
+  'BBC News': 'bbc.com',
+  'NPR': 'npr.org',
+  'The Guardian': 'theguardian.com',
+  'ESPN': 'espn.com',
+  'Reuters': 'reuters.com',
+  'Reuters Press Team': 'reuters.com',
+  'Associated Press': 'apnews.com'
+}
 
 const X_VIDEO_FEED_SOURCES = [
   { name: 'Reuters', category: 'world', handle: 'Reuters' },
@@ -20,6 +30,7 @@ const VIDEO_FEEDS = [
   { name: 'BBC News', category: 'world', url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UC16niRr50-MSBwiO3YDb3RA' },
   { name: 'Associated Press', category: 'world', url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UC52X5wxOL_s5yw0dQk7NtgA' }
 ]
+
 const FALLBACK_VIDEO_POSTS = [
   { source: 'Reuters', category: 'world', title: 'Reuters World News video dispatch', description: 'A current Reuters video report available on the source video page.', url: 'https://www.youtube.com/watch?v=Z4Fpi28fj4Y', thumbnail: 'https://images.unsplash.com/photo-1504711434969-e33886168f5c?auto=format&fit=crop&w=900&q=80', provider: 'youtube' },
   { source: 'BBC News', category: 'world', title: 'BBC One-minute World News', description: 'A BBC News video briefing available on the source video page.', url: 'https://www.youtube.com/watch?v=9d9R8kUGpSA', thumbnail: 'https://images.unsplash.com/photo-1495020689067-958852a7765e?auto=format&fit=crop&w=900&q=80', provider: 'youtube' },
@@ -48,6 +59,9 @@ const youtubeThumbnail = url => {
   return id ? `https://i.ytimg.com/vi/${id}/hqdefault.jpg` : ''
 }
 const idFor = url => Buffer.from(url).toString('base64url')
+const domainFor = url => { try { return new URL(url).hostname.replace(/^www\./, '') } catch { return '' } }
+const logoFor = domain => domain ? `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=128` : ''
+const sourceLogoFor = (source, url = '') => logoFor(SOURCE_LOGO_DOMAINS[source] || domainFor(url))
 const canonicalXPostUrl = url => url.replace('twitter.com/', 'x.com/').replace(/\?.*$/, '')
 const isXPostUrl = url => /^https?:\/\/(?:www\.)?(?:x|twitter)\.com\/[^/]+\/status\/\d+/i.test(url)
 const isYouTubeUrl = url => /^https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\//i.test(url)
@@ -98,6 +112,7 @@ async function enrichArticleMedia(article) {
 
   return {
     ...article,
+    sourceLogo: article.sourceLogo || sourceLogoFor(article.source, article.url),
     image: imageUrl,
     video: {
       ...inferred,
@@ -127,7 +142,19 @@ async function fetchFeed(feed) {
     const description = text(tag(item, 'description'))
     const publishedAt = new Date(text(tag(item, 'pubDate')) || Date.now()).toISOString()
     const mediaVideo = video(item)
-    return { id: idFor(url), title, description: description || 'Read the latest reporting from this source.', source: feed.name, category: classify(`${feed.category} ${title} ${description}`), image: image(item), video: mediaVideo, publishedAt, content: description || 'Continue reading at the original publisher.', url }
+    return {
+      id: idFor(url),
+      title,
+      description: description || 'Read the latest reporting from this source.',
+      source: feed.name,
+      sourceLogo: sourceLogoFor(feed.name, feed.url),
+      category: classify(`${feed.category} ${title} ${description}`),
+      image: image(item),
+      video: mediaVideo,
+      publishedAt,
+      content: description || 'Continue reading at the original publisher.',
+      url
+    }
   }).filter(article => article.url && article.title)
 }
 
@@ -137,7 +164,17 @@ async function fetchNewsApi() {
   if (!response.ok) return []
   const json = await response.json()
   return json.articles.filter(article => article.title && article.url).map(article => ({
-    id: idFor(article.url), title: article.title, description: article.description || 'Read the latest reporting from this source.', source: article.source?.name || 'News desk', image: article.urlToImage || '', video: null, publishedAt: article.publishedAt, content: article.content || article.description || 'Continue reading at the original publisher.', url: article.url, category: classify(`${article.title} ${article.description}`)
+    id: idFor(article.url),
+    title: article.title,
+    description: article.description || 'Read the latest reporting from this source.',
+    source: article.source?.name || 'News desk',
+    sourceLogo: sourceLogoFor(article.source?.name || 'News desk', article.url),
+    image: article.urlToImage || '',
+    video: null,
+    publishedAt: article.publishedAt,
+    content: article.content || article.description || 'Continue reading at the original publisher.',
+    url: article.url,
+    category: classify(`${article.title} ${article.description}`)
   }))
 }
 
@@ -151,7 +188,19 @@ async function fetchVideoFeed(feed) {
     const title = text(tag(item, 'title'))
     const description = text(tag(item, 'media:description')) || text(tag(item, 'summary')) || 'Watch this video from the source.'
     const thumbnail = image(item) || youtubeThumbnail(url)
-    return { id: idFor(url), title, description, source: feed.name, category: classify(`${feed.category} ${title} ${description}`), image: thumbnail, video: { type: 'external', provider: 'youtube', url }, publishedAt: new Date(text(tag(item, 'published')) || Date.now()).toISOString(), content: `${description} Playback opens on the original video page.`, url }
+    return {
+      id: idFor(url),
+      title,
+      description,
+      source: feed.name,
+      sourceLogo: sourceLogoFor(feed.name, url),
+      category: classify(`${feed.category} ${title} ${description}`),
+      image: thumbnail,
+      video: { type: 'external', provider: 'youtube', url },
+      publishedAt: new Date(text(tag(item, 'published')) || Date.now()).toISOString(),
+      content: `${description} Playback opens on the original video page.`,
+      url
+    }
   }).filter(article => article.url && article.title)
 }
 
@@ -169,7 +218,20 @@ async function fetchXVideoFeed(source) {
         const description = text(tag(item, 'description')) || 'Watch this video post from the source on X.'
         const thumbnail = image(item)
         const hasVideoCue = /video|pic\.x\.com|pic\.twitter\.com/i.test(item)
-        return { id: idFor(url), title, description, source: source.name, category: source.category, image: thumbnail, video: { type: 'external', provider: 'x', url }, publishedAt: new Date(text(tag(item, 'pubDate')) || Date.now()).toISOString(), content: `${description} Playback opens on the original X post.`, url, hasVideoCue }
+        return {
+          id: idFor(url),
+          title,
+          description,
+          source: source.name,
+          sourceLogo: sourceLogoFor(source.name, url),
+          category: source.category,
+          image: thumbnail,
+          video: { type: 'external', provider: 'x', url },
+          publishedAt: new Date(text(tag(item, 'pubDate')) || Date.now()).toISOString(),
+          content: `${description} Playback opens on the original X post.`,
+          url,
+          hasVideoCue
+        }
       }).filter(article => isXPostUrl(article.url) && article.hasVideoCue).map(({ hasVideoCue, ...article }) => article)
     } catch {
       continue
@@ -188,6 +250,7 @@ async function getSocialVideos() {
     title: item.title,
     description: item.description,
     source: item.source,
+    sourceLogo: sourceLogoFor(item.source, item.url),
     category: item.category,
     image: item.thumbnail || (item.provider === 'youtube' ? youtubeThumbnail(item.url) : ''),
     video: { type: 'external', provider: item.provider, url: item.url },
@@ -196,7 +259,6 @@ async function getSocialVideos() {
     url: item.url
   }))
 }
-
 
 export async function getAllArticles() {
   if (cache.expiresAt > Date.now()) return cache.articles
@@ -214,5 +276,8 @@ export async function getAllArticles() {
 
 export async function getArticles(page = 1, category = 'all') {
   const articles = await getAllArticles()
-  return articles.filter(article => category === 'all' || article.category === category).slice((page - 1) * 6, page * 6)
+  return articles
+    .filter(article => category === 'all' || article.category === category)
+    .sort((a, b) => Number(Boolean(b.image || b.video)) - Number(Boolean(a.image || a.video)) || new Date(b.publishedAt) - new Date(a.publishedAt))
+    .slice((page - 1) * 6, page * 6)
 }
