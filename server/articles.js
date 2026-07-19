@@ -40,9 +40,71 @@ const video = item => {
   if (!node) return null
   return { type: 'direct', url: attr(node, 'url'), contentType: attr(node, 'type') || 'video/mp4' }
 }
+const youtubeThumbnail = url => {
+  const id = url.match(/[?&]v=([^&]+)/i)?.[1]
+    || url.match(/youtu\.be\/([^?&/]+)/i)?.[1]
+    || url.match(/youtube\.com\/shorts\/([^?&/]+)/i)?.[1]
+    || url.match(/youtube\.com\/embed\/([^?&/]+)/i)?.[1]
+  return id ? `https://i.ytimg.com/vi/${id}/hqdefault.jpg` : ''
+}
 const idFor = url => Buffer.from(url).toString('base64url')
 const canonicalXPostUrl = url => url.replace('twitter.com/', 'x.com/').replace(/\?.*$/, '')
 const isXPostUrl = url => /^https?:\/\/(?:www\.)?(?:x|twitter)\.com\/[^/]+\/status\/\d+/i.test(url)
+const isYouTubeUrl = url => /^https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\//i.test(url)
+const xPostId = url => canonicalXPostUrl(url).match(/status\/(\d+)/i)?.[1] || ''
+const xPreviewCache = new Map()
+const looksLikeImageUrl = url => /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(url || '') || /ytimg\.com|twimg\.com|unsplash\.com/i.test(url || '')
+
+async function xPreviewImage(url) {
+  const id = xPostId(url)
+  if (!id) return ''
+  if (xPreviewCache.has(id)) return xPreviewCache.get(id)
+
+  try {
+    const response = await fetch(`https://cdn.syndication.twimg.com/tweet-result?id=${id}&token=1`, {
+      signal: AbortSignal.timeout(6000),
+      headers: { 'User-Agent': 'TheDailyLedger/1.0 (+local news reader)' }
+    })
+    if (!response.ok) {
+      xPreviewCache.set(id, '')
+      return ''
+    }
+
+    const json = await response.json()
+    const media = json.mediaDetails?.find(item => /video|animated_gif|photo/i.test(item.type || '')) || json.mediaDetails?.[0]
+    const preview = media?.media_url_https || media?.media_url || ''
+    xPreviewCache.set(id, preview)
+    return preview
+  } catch {
+    xPreviewCache.set(id, '')
+    return ''
+  }
+}
+
+function inferredExternalVideo(url) {
+  if (isYouTubeUrl(url)) return { type: 'external', provider: 'youtube', url }
+  if (isXPostUrl(url)) return { type: 'external', provider: 'x', url: canonicalXPostUrl(url) }
+  return null
+}
+
+async function enrichArticleMedia(article) {
+  const inferred = article.video || inferredExternalVideo(article.url)
+  if (!inferred) return article
+
+  const hasValidImage = looksLikeImageUrl(article.image)
+  let imageUrl = hasValidImage ? article.image : ''
+  if (!imageUrl && inferred.provider === 'youtube') imageUrl = youtubeThumbnail(inferred.url)
+  if (!imageUrl && inferred.provider === 'x') imageUrl = await xPreviewImage(inferred.url)
+
+  return {
+    ...article,
+    image: imageUrl,
+    video: {
+      ...inferred,
+      url: inferred.provider === 'x' ? canonicalXPostUrl(inferred.url) : inferred.url
+    }
+  }
+}
 
 export function classify(value = '') {
   const textValue = value.toLowerCase()
@@ -88,7 +150,7 @@ async function fetchVideoFeed(feed) {
     const url = text(atomLink(item))
     const title = text(tag(item, 'title'))
     const description = text(tag(item, 'media:description')) || text(tag(item, 'summary')) || 'Watch this video from the source.'
-    const thumbnail = image(item)
+    const thumbnail = image(item) || youtubeThumbnail(url)
     return { id: idFor(url), title, description, source: feed.name, category: classify(`${feed.category} ${title} ${description}`), image: thumbnail, video: { type: 'external', provider: 'youtube', url }, publishedAt: new Date(text(tag(item, 'published')) || Date.now()).toISOString(), content: `${description} Playback opens on the original video page.`, url }
   }).filter(article => article.url && article.title)
 }
@@ -127,7 +189,7 @@ async function getSocialVideos() {
     description: item.description,
     source: item.source,
     category: item.category,
-    image: item.thumbnail,
+    image: item.thumbnail || (item.provider === 'youtube' ? youtubeThumbnail(item.url) : ''),
     video: { type: 'external', provider: item.provider, url: item.url },
     publishedAt: new Date(Date.now() - (index + 1) * 15 * 60 * 1000).toISOString(),
     content: `${item.description} Playback opens on the original post or video page.`,
@@ -140,7 +202,9 @@ export async function getAllArticles() {
   if (cache.expiresAt > Date.now()) return cache.articles
   const results = await Promise.allSettled(FEEDS.map(fetchFeed))
   const feedArticles = results.flatMap(result => result.status === 'fulfilled' ? result.value : [])
-  const articles = [...await getSocialVideos(), ...feedArticles, ...await fetchNewsApi()]
+  const rawArticles = [...await getSocialVideos(), ...feedArticles, ...await fetchNewsApi()]
+  const withMedia = await Promise.all(rawArticles.map(enrichArticleMedia))
+  const articles = withMedia
     .filter((article, index, source) => source.findIndex(other => other.url === article.url) === index)
     .sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt))
   if (!articles.length) throw new Error('All configured news sources are unavailable')
