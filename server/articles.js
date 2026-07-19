@@ -1,10 +1,10 @@
 const FEEDS = [
-  { name: 'BBC News', category: 'world', url: 'https://feeds.bbci.co.uk/news/world/rss.xml' },
-  { name: 'BBC News', category: 'business', url: 'https://feeds.bbci.co.uk/news/business/rss.xml' },
-  { name: 'NPR', category: 'world', url: 'https://feeds.npr.org/1001/rss.xml' },
-  { name: 'NPR', category: 'science', url: 'https://feeds.npr.org/1007/rss.xml' },
-  { name: 'The Guardian', category: 'culture', url: 'https://www.theguardian.com/culture/rss' },
-  { name: 'ESPN', category: 'sports', url: 'https://www.espn.com/espn/rss/news' }
+  { name: 'BBC News', category: 'world', url: 'https://feeds.bbci.co.uk/news/world/rss.xml', logoDomain: 'bbc.com' },
+  { name: 'BBC News', category: 'business', url: 'https://feeds.bbci.co.uk/news/business/rss.xml', logoDomain: 'bbc.com' },
+  { name: 'NPR', category: 'world', url: 'https://feeds.npr.org/1001/rss.xml', logoDomain: 'npr.org' },
+  { name: 'NPR', category: 'science', url: 'https://feeds.npr.org/1007/rss.xml', logoDomain: 'npr.org' },
+  { name: 'The Guardian', category: 'culture', url: 'https://www.theguardian.com/culture/rss', logoDomain: 'theguardian.com' },
+  { name: 'ESPN', category: 'sports', url: 'https://www.espn.com/espn/rss/news', logoDomain: 'espn.com' }
 ]
 
 let cache = { articles: [], expiresAt: 0 }
@@ -14,6 +14,8 @@ const text = value => decode(value || '').replace(/<[^>]+>/g, '').replace(/\s+/g
 const tag = (item, name) => { const match = item.match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`, 'i')); return match?.[1] || '' }
 const image = item => item.match(/<(?:media:content|media:thumbnail|enclosure)[^>]+(?:url|href)=["']([^"']+)["']/i)?.[1] || ''
 const idFor = url => Buffer.from(url).toString('base64url')
+const domainFor = url => { try { return new URL(url).hostname.replace(/^www\./, '') } catch { return '' } }
+const logoFor = domain => domain ? `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=128` : ''
 
 export function classify(value = '') {
   const textValue = value.toLowerCase()
@@ -35,7 +37,7 @@ async function fetchFeed(feed) {
     const title = text(tag(item, 'title'))
     const description = text(tag(item, 'description'))
     const publishedAt = new Date(text(tag(item, 'pubDate')) || Date.now()).toISOString()
-    return { id: idFor(url), title, description: description || 'Read the latest reporting from this source.', source: feed.name, category: classify(`${feed.category} ${title} ${description}`), image: image(item), publishedAt, content: description || 'Continue reading at the original publisher.', url }
+    return { id: idFor(url), title, description: description || 'Read the latest reporting from this source.', source: feed.name, sourceLogo: logoFor(feed.logoDomain || domainFor(url)), category: classify(`${feed.category} ${title} ${description}`), image: image(item), publishedAt, content: description || 'Continue reading at the original publisher.', url }
   }).filter(article => article.url && article.title)
 }
 
@@ -45,7 +47,7 @@ async function fetchNewsApi() {
   if (!response.ok) return []
   const json = await response.json()
   return json.articles.filter(article => article.title && article.url).map(article => ({
-    id: idFor(article.url), title: article.title, description: article.description || 'Read the latest reporting from this source.', source: article.source?.name || 'News desk', image: article.urlToImage || '', publishedAt: article.publishedAt, content: article.content || article.description || 'Continue reading at the original publisher.', url: article.url, category: classify(`${article.title} ${article.description}`)
+    id: idFor(article.url), title: article.title, description: article.description || 'Read the latest reporting from this source.', source: article.source?.name || 'News desk', sourceLogo: logoFor(domainFor(article.url)), image: article.urlToImage || '', publishedAt: article.publishedAt, content: article.content || article.description || 'Continue reading at the original publisher.', url: article.url, category: classify(`${article.title} ${article.description}`)
   }))
 }
 
