@@ -7,9 +7,7 @@ const cats = ['all', 'world', 'business', 'technology', 'science', 'culture', 's
 const pretty = value => value === 'all' ? 'All stories' : value[0].toUpperCase() + value.slice(1)
 const age = date => {
   const hours = Math.max(1, Math.round((Date.now() - new Date(date)) / 36e5))
-  return hours < 24
-    ? `${hours}h ago`
-    : new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  return hours < 24 ? `${hours}h ago` : new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 const commentDate = date => new Date(date).toLocaleString('en-US', {
   month: 'short',
@@ -18,6 +16,16 @@ const commentDate = date => new Date(date).toLocaleString('en-US', {
   hour: 'numeric',
   minute: '2-digit'
 })
+
+const youtubePreview = url => {
+  const id = url?.match(/[?&]v=([^&]+)/i)?.[1]
+    || url?.match(/youtu\.be\/([^?&/]+)/i)?.[1]
+    || url?.match(/youtube\.com\/shorts\/([^?&/]+)/i)?.[1]
+    || url?.match(/youtube\.com\/embed\/([^?&/]+)/i)?.[1]
+  return id ? `https://i.ytimg.com/vi/${id}/hqdefault.jpg` : ''
+}
+
+const previewFor = article => article.image || (article.video?.provider === 'youtube' ? youtubePreview(article.video.url) : '')
 
 function SourceLogo({ article }) {
   const [showLogo, setShowLogo] = useState(Boolean(article.sourceLogo))
@@ -56,64 +64,64 @@ function Header() {
   )
 }
 
-function VideoPreview({ video, title, category }) {
-  const toEmbed = url => {
-    if (/youtube\.com\/watch/i.test(url)) {
-      try {
-        const id = new URL(url).searchParams.get('v')
-        if (id) return `https://www.youtube-nocookie.com/embed/${id}`
-      } catch {
-        return url
-      }
-    }
-    return url
+function VideoBadge({ video }) {
+  return video && <span className="video-badge"><b>▶</b> Video</span>
+}
+
+function Media({ article, feature = false }) {
+  const preview = previewFor(article)
+  const [hasImage, setHasImage] = useState(Boolean(preview))
+
+  if (article.video?.type === 'direct') {
+    return (
+      <div className="image-wrap video-wrap">
+        <video src={article.video.url} poster={preview} muted autoPlay loop playsInline controls={!feature} />
+        <span className="category">{article.category}</span>
+        <VideoBadge video={article.video} />
+      </div>
+    )
   }
 
-  const source = toEmbed(video.url)
-  const iframeUrl = `${source}${source.includes('?') ? '&' : '?'}mute=1&playsinline=1&rel=0`
+  if (hasImage) {
+    return (
+      <div className="image-wrap">
+        <img src={preview} alt="" onError={() => setHasImage(false)} />
+        <span className="category">{article.category}</span>
+        <VideoBadge video={article.video} />
+        {article.video?.type === 'external' && <span className="play-button">▶</span>}
+      </div>
+    )
+  }
 
-  return (
-    <div className="video-wrap">
-      {video.type === 'file' ? (
-        <video src={video.url} muted playsInline controls preload="metadata" />
-      ) : (
-        <iframe
-          src={iframeUrl}
-          title={`Video: ${title}`}
-          loading="lazy"
-          allow="autoplay; encrypted-media; picture-in-picture"
-          referrerPolicy="strict-origin-when-cross-origin"
-        />
-      )}
-      <span className="category video-label">{category} video</span>
-      <span className="mute-note">Muted preview</span>
+  return article.video?.type === 'external' && (
+    <div className="image-wrap no-image">
+      <span className="category">{article.category}</span>
+      <VideoBadge video={article.video} />
+      <span className="play-button">▶</span>
     </div>
   )
 }
 
 function Card({ article, feature = false, size = '' }) {
-  const [hasImage, setHasImage] = useState(Boolean(article.image))
+  const isExternalVideo = article.video?.type === 'external'
 
-  const visual = article.video
-    ? <VideoPreview video={article.video} title={article.title} category={article.category} />
-    : hasImage && (
-      <div className="image-wrap">
-        <img src={article.image} alt="" onError={() => setHasImage(false)} />
-        <span className="category">{article.category}</span>
+  const content = (
+    <>
+      <Media article={article} feature={feature} />
+      <div className="card-copy">
+        <p className="meta"><SourceLogo article={article} /> <em>·</em> {age(article.publishedAt)}</p>
+        <h2>{article.title}</h2>
+        <p className="dek">{article.description}</p>
+        <span className="read">{article.video ? 'Watch story' : 'Read story'} <b>→</b></span>
       </div>
-    )
+    </>
+  )
 
   return (
     <article className={`card ${feature ? 'feature' : ''} ${size}`.trim()}>
-      <Link to={`/article/${article.id}`}>
-        {visual}
-        <div className="card-copy">
-          <p className="meta"><SourceLogo article={article} /> <em>·</em> {age(article.publishedAt)}</p>
-          <h2>{article.title}</h2>
-          <p className="dek">{article.description}</p>
-          <span className="read">Read story <b>→</b></span>
-        </div>
-      </Link>
+      {isExternalVideo
+        ? <a href={article.url} target="_blank" rel="noreferrer">{content}</a>
+        : <Link to={`/article/${article.id}`}>{content}</Link>}
     </article>
   )
 }
@@ -153,6 +161,7 @@ function Landing() {
   if (loading) return <main className="loading">Loading today's edition…</main>
 
   const [lead, ...rest] = articles
+  const videos = articles.filter(article => article.video).slice(0, 2)
 
   return (
     <>
@@ -173,6 +182,17 @@ function Landing() {
             <div className="issue">No. 07 <span>—</span> 2026</div>
           </aside>
         </section>
+
+        {videos.length > 0 && (
+          <section className="video-rail">
+            <div>
+              <p className="eyebrow">WATCH THE FEED</p>
+              <h2>Video from trusted newsrooms and social desks</h2>
+              <p>Muted autoplay is used for direct video feeds. External video items open the source for viewing.</p>
+            </div>
+            <div className="video-list">{videos.map(article => <Card key={article.id} article={article} />)}</div>
+          </section>
+        )}
 
         <section className="section-title">
           <div>
@@ -385,6 +405,8 @@ function Article() {
 
   if (!article) return <main className="loading">Opening story…</main>
 
+  const preview = previewFor(article)
+
   return (
     <main className="article">
       <Link to="/feed" className="back">← Back to latest stories</Link>
@@ -396,17 +418,25 @@ function Article() {
         <span>{new Date(article.publishedAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</span>
         <span>· {age(article.publishedAt)}</span>
       </div>
-      {hasImage && article.image && (
-        <img className="hero" src={article.image} alt="" onError={() => setHasImage(false)} />
-      )}
+
+      {article.video?.type === 'direct' ? (
+        <video className="hero" src={article.video.url} poster={preview} muted autoPlay playsInline controls />
+      ) : hasImage && preview ? (
+        <div className="article-media">
+          <img className="hero" src={preview} alt="" onError={() => setHasImage(false)} />
+          {article.video && <span className="play-button">▶</span>}
+        </div>
+      ) : null}
+
       <div className="story">
         <p>{article.content}</p>
         <p>
           Thoughtful reporting starts with a closer look. The Daily Ledger gathers the essential context around the world's most
           important conversations, then gives readers a clear path to the original journalism.
         </p>
-        <a href={article.url} target="_blank" rel="noreferrer" className="source-link">Read the original report <b>↗</b></a>
+        <a href={article.url} target="_blank" rel="noreferrer" className="source-link">{article.video ? 'Watch at the original source' : 'Read the original report'} <b>↗</b></a>
       </div>
+
       <Comments articleId={id} />
     </main>
   )
